@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -65,42 +66,87 @@ class Survey extends StatefulWidget {
   State<Survey> createState() => _SurveyState();
 }
 
+int chan(int f) => f >= 5000 ? (f - 5000) ~/ 5 : (f == 2484 ? 14 : (f - 2407) ~/ 5);
+
 class _SurveyState extends State<Survey> {
   File? plan;
   final pts = <Pt>[];
   List<WiFiAccessPoint> aps = [];
   String? target;
-  String status = 'Kat planı yükle, ağ seç, haritaya dokunarak ölç.';
-  bool busy = false;
+  String status = 'Ağlar taranıyor...';
+  bool busy = false, scanning = false;
+  Timer? timer;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scan());
+    timer = Timer.periodic(const Duration(seconds: 25), (_) => _scan());
+  }
+
+  @override
+  void dispose() {
+    timer?.cancel();
+    super.dispose();
+  }
+
+  void _msg(String m) {
+    if (mounted) setState(() => status = m);
+  }
 
   Future<bool> _scan() async {
-    if (!await Permission.locationWhenInUse.request().isGranted) {
-      setState(() => status = 'Konum izni gerekli (Android Wi-Fi taraması için).');
+    if (scanning) return aps.isNotEmpty;
+    scanning = true;
+    try {
+      final perm = await Permission.locationWhenInUse.request();
+      if (!perm.isGranted) {
+        _msg('Konum izni verilmedi. Ayarlar > Uygulamalar > Turquan Site Survey > İzinler > Konum: İzin ver.');
+        if (perm.isPermanentlyDenied) await openAppSettings();
+        return false;
+      }
+      if (!await Permission.locationWhenInUse.serviceStatus.isEnabled) {
+        _msg('Telefonun KONUM (GPS) özelliği kapalı. Android, Wi-Fi taraması için bunu açmanızı ister.');
+        return false;
+      }
+      final can = await WiFiScan.instance.canStartScan();
+      if (can == CanStartScan.yes) {
+        await WiFiScan.instance.startScan();
+        await Future.delayed(const Duration(seconds: 2));
+      }
+      final canGet = await WiFiScan.instance.canGetScannedResults();
+      if (canGet != CanGetScannedResults.yes) {
+        _msg('Sonuç alınamadı: ${canGet.name}');
+        return false;
+      }
+      final r = await WiFiScan.instance.getScannedResults();
+      r.sort((a, b) => b.level.compareTo(a.level));
+      if (!mounted) return false;
+      setState(() {
+        aps = r;
+        status = r.isEmpty
+            ? 'Hiç ağ bulunamadı. Wi-Fi açık mı? Emülatör/tablet sanal Wi-Fi taramayı desteklemez, gerçek telefonda deneyin.'
+            : '${r.length} ağ bulundu. Listeden ağ seçin, sonra plana dokunup ölçün.';
+      });
+      return r.isNotEmpty;
+    } catch (e) {
+      _msg('Tarama hatası: $e');
       return false;
+    } finally {
+      scanning = false;
     }
-    final can = await WiFiScan.instance.canStartScan();
-    if (can == CanStartScan.yes) await WiFiScan.instance.startScan();
-    if (await WiFiScan.instance.canGetScannedResults() != CanGetScannedResults.yes) {
-      setState(() => status = 'Tarama sonucu alınamadı (Wi-Fi/Konum açık mı?).');
-      return false;
-    }
-    final r = await WiFiScan.instance.getScannedResults();
-    r.sort((a, b) => b.level.compareTo(a.level));
-    setState(() => aps = r);
-    return true;
   }
 
   Future<void> _measure(Offset p, Size s) async {
     if (plan == null || busy) return;
     setState(() => busy = true);
-    if (await _scan() && aps.isNotEmpty) {
+    if (await _scan()) {
       final ap = target == null
           ? aps.first
           : aps.firstWhere((a) => a.ssid == target, orElse: () => aps.first);
       pts.add(Pt(p.dx / s.width, p.dy / s.height, ap.level, ap.ssid));
-      status = '${ap.ssid}  ${ap.level} dBm  |  ${ap.frequency} MHz  |  ${pts.length} nokta';
+      _msg('Ölçüldü: ${ap.ssid}  ${ap.level} dBm  |  ${ap.frequency} MHz  |  ${pts.length} nokta');
     }
-    setState(() => busy = false);
+    if (mounted) setState(() => busy = false);
   }
 
   Future<void> _pick() async {
@@ -108,69 +154,101 @@ class _SurveyState extends State<Survey> {
     if (f != null) setState(() { plan = File(f.path); pts.clear(); });
   }
 
+  Widget _panel() {
+    final ssids = aps.map((a) => a.ssid).where((x) => x.isNotEmpty).toSet().toList();
+    return Container(
+      margin: const EdgeInsets.fromLTRB(10, 0, 10, 10),
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.red.shade900)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        DropdownButton<String>(
+          isExpanded: true,
+          hint: Text(ssids.isEmpty ? 'Ağ bulunamadı (yenile ↻)' : 'Ölçülecek ağı seçin'),
+          value: ssids.contains(target) ? target : null,
+          items: ssids.map((x) => DropdownMenuItem(value: x, child: Text(x))).toList(),
+          onChanged: (v) => setState(() => target = v),
+        ),
+        Expanded(
+          child: aps.isEmpty
+              ? const Center(child: Text('Liste boş', style: TextStyle(color: Colors.white38)))
+              : ListView.builder(
+                  itemCount: aps.length,
+                  itemBuilder: (c, i) {
+                    final a = aps[i];
+                    final name = a.ssid.isEmpty ? '(gizli ağ)' : a.ssid;
+                    return ListTile(
+                      dense: true,
+                      selected: a.ssid == target,
+                      selectedTileColor: Colors.red.withOpacity(0.2),
+                      leading: Icon(Icons.wifi, color: rssiColor(a.level)),
+                      title: Text(name),
+                      subtitle: Text('${a.bssid}  •  Kanal ${chan(a.frequency)}  •  ${a.frequency} MHz', style: const TextStyle(fontSize: 11)),
+                      trailing: Text('${a.level} dBm', style: TextStyle(color: rssiColor(a.level), fontWeight: FontWeight.bold)),
+                      onTap: a.ssid.isEmpty ? null : () => setState(() => target = a.ssid),
+                    );
+                  }),
+        ),
+        Text(status, style: const TextStyle(color: Colors.white70, fontSize: 12)),
+      ]),
+    );
+  }
+
+  Widget _map() => Container(
+        margin: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          border: Border.all(color: Colors.red.shade900, width: 2),
+          borderRadius: BorderRadius.circular(12),
+          boxShadow: [BoxShadow(color: Colors.red.withOpacity(0.25), blurRadius: 18)],
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(10),
+          child: LayoutBuilder(builder: (c, box) {
+            final size = Size(box.maxWidth, box.maxHeight);
+            if (plan == null) {
+              return Center(child: ElevatedButton.icon(onPressed: _pick, icon: const Icon(Icons.upload), label: const Text('KAT PLANI YÜKLE')));
+            }
+            return GestureDetector(
+              onTapUp: (d) => _measure(d.localPosition, size),
+              child: Stack(fit: StackFit.expand, children: [
+                Image.file(plan!, fit: BoxFit.contain),
+                CustomPaint(painter: HeatPainter(pts)),
+                if (busy) const Center(child: CircularProgressIndicator()),
+              ]),
+            );
+          }),
+        ),
+      );
+
   @override
   Widget build(BuildContext context) {
-    final ssids = aps.map((a) => a.ssid).where((s) => s.isNotEmpty).toSet().toList();
     return Scaffold(
       appBar: AppBar(
         backgroundColor: Colors.black,
         leading: Padding(padding: const EdgeInsets.all(6), child: ClipRRect(borderRadius: BorderRadius.circular(8), child: Image.asset('assets/icon.png'))),
-        title: const Text('TURQUAN SITE SURVEY',
-            style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold, letterSpacing: 2)),
+        title: const Text('TURQUAN SITE SURVEY', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold, letterSpacing: 2)),
         actions: [
-          IconButton(icon: const Icon(Icons.map), onPressed: _pick, tooltip: 'Kat planı'),
+          IconButton(icon: const Icon(Icons.map), onPressed: _pick, tooltip: 'Kat planı seç'),
           IconButton(icon: const Icon(Icons.refresh), onPressed: _scan, tooltip: 'Ağları tara'),
-          IconButton(icon: const Icon(Icons.delete), onPressed: () => setState(pts.clear), tooltip: 'Temizle'),
+          PopupMenuButton<String>(
+            onSelected: (v) => setState(() {
+              if (v == 'undo' && pts.isNotEmpty) pts.removeLast();
+              if (v == 'clear') pts.clear();
+              if (v == 'plan') { plan = null; pts.clear(); }
+            }),
+            itemBuilder: (_) => const [
+              PopupMenuItem(value: 'undo', child: Text('Son noktayı sil')),
+              PopupMenuItem(value: 'clear', child: Text('Tüm noktaları sil')),
+              PopupMenuItem(value: 'plan', child: Text('Kat planını kaldır')),
+            ],
+          ),
         ],
       ),
-      body: Column(children: [
-        if (ssids.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            child: DropdownButton<String>(
-              isExpanded: true,
-              hint: const Text('Ölçülecek ağ (SSID)'),
-              value: ssids.contains(target) ? target : null,
-              items: ssids.map((s) => DropdownMenuItem(value: s, child: Text(s))).toList(),
-              onChanged: (v) => setState(() => target = v),
-            ),
-          ),
-        Expanded(
-          child: Container(
-            margin: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              border: Border.all(color: Colors.red.shade900, width: 2),
-              borderRadius: BorderRadius.circular(12),
-              boxShadow: [BoxShadow(color: Colors.red.withOpacity(0.25), blurRadius: 18)],
-            ),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(10),
-              child: LayoutBuilder(builder: (c, box) {
-                final size = Size(box.maxWidth, box.maxHeight);
-                if (plan == null) {
-                  return Center(
-                      child: ElevatedButton.icon(
-                          onPressed: _pick,
-                          icon: const Icon(Icons.upload),
-                          label: const Text('KAT PLANI YÜKLE')));
-                }
-                return GestureDetector(
-                  onTapUp: (d) => _measure(d.localPosition, size),
-                  child: Stack(fit: StackFit.expand, children: [
-                    Image.file(plan!, fit: BoxFit.contain),
-                    CustomPaint(painter: HeatPainter(pts)),
-                    if (busy) const Center(child: CircularProgressIndicator()),
-                  ]),
-                );
-              }),
-            ),
-          ),
-        ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(12, 0, 12, 14),
-          child: Text(status, style: const TextStyle(color: Colors.white70)),
-        ),
-      ]),
+      body: LayoutBuilder(builder: (c, b) {
+        if (b.maxWidth > b.maxHeight) {
+          return Row(children: [Expanded(child: _map()), SizedBox(width: 340, child: _panel())]);
+        }
+        return Column(children: [Expanded(child: _map()), SizedBox(height: 260, child: _panel())]);
+      }),
     );
   }
 }
