@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:wifi_scan/wifi_scan.dart';
+import 'analyzer.dart';
+import 'shared.dart';
 
 void main() => runApp(const App());
 
@@ -32,7 +34,7 @@ class _SplashState extends State<Splash> {
     super.initState();
     Future.delayed(const Duration(milliseconds: 2200), () {
       if (!mounted) return;
-      Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const Survey()));
+      Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const Shell()));
     });
   }
 
@@ -53,6 +55,29 @@ class _SplashState extends State<Splash> {
       );
 }
 
+class Shell extends StatefulWidget {
+  const Shell({super.key});
+  @override
+  State<Shell> createState() => _ShellState();
+}
+
+class _ShellState extends State<Shell> {
+  int i = 0;
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        body: IndexedStack(index: i, children: const [Survey(), Analyzer()]),
+        bottomNavigationBar: NavigationBar(
+          backgroundColor: Colors.black,
+          selectedIndex: i,
+          onDestinationSelected: (v) => setState(() => i = v),
+          destinations: const [
+            NavigationDestination(icon: Icon(Icons.map_outlined), selectedIcon: Icon(Icons.map), label: 'Survey'),
+            NavigationDestination(icon: Icon(Icons.speed), label: 'Analiz'),
+          ],
+        ),
+      );
+}
+
 class Pt {
   final double x, y; // 0..1 normalize
   final int rssi;
@@ -66,7 +91,6 @@ class Survey extends StatefulWidget {
   State<Survey> createState() => _SurveyState();
 }
 
-int chan(int f) => f >= 5000 ? (f - 5000) ~/ 5 : (f == 2484 ? 14 : (f - 2407) ~/ 5);
 
 class _SurveyState extends State<Survey> {
   File? plan;
@@ -80,6 +104,7 @@ class _SurveyState extends State<Survey> {
   @override
   void initState() {
     super.initState();
+    scanNow = _scan;
     WidgetsBinding.instance.addPostFrameCallback((_) => _scan());
     timer = Timer.periodic(const Duration(seconds: 25), (_) => _scan());
   }
@@ -120,6 +145,7 @@ class _SurveyState extends State<Survey> {
       }
       final r = await WiFiScan.instance.getScannedResults();
       r.sort((a, b) => b.level.compareTo(a.level));
+      apsNotifier.value = r;
       if (!mounted) return false;
       setState(() {
         aps = r;
@@ -251,13 +277,6 @@ class _SurveyState extends State<Survey> {
       }),
     );
   }
-}
-
-Color rssiColor(int r) {
-  if (r >= -50) return const Color(0xFF00E676);
-  if (r >= -65) return const Color(0xFFC6FF00);
-  if (r >= -75) return const Color(0xFFFF9100);
-  return const Color(0xFFD50000);
 }
 
 class HeatPainter extends CustomPainter {
