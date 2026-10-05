@@ -15,7 +15,40 @@ class App extends StatelessWidget {
         theme: ThemeData.dark().copyWith(
             scaffoldBackgroundColor: const Color(0xFF0A0A0A),
             colorScheme: const ColorScheme.dark(primary: Color(0xFFD50000))),
-        home: const Survey(),
+        home: const Splash(),
+      );
+}
+
+class Splash extends StatefulWidget {
+  const Splash({super.key});
+  @override
+  State<Splash> createState() => _SplashState();
+}
+
+class _SplashState extends State<Splash> {
+  @override
+  void initState() {
+    super.initState();
+    Future.delayed(const Duration(milliseconds: 2200), () {
+      if (!mounted) return;
+      Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const Survey()));
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+        backgroundColor: Colors.white,
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Image.asset('assets/logo.png'),
+              const SizedBox(height: 8),
+              const Text('SITE SURVEY',
+                  style: TextStyle(color: Color(0xFFB30000), fontSize: 20, fontWeight: FontWeight.bold, letterSpacing: 6)),
+            ]),
+          ),
+        ),
       );
 }
 
@@ -81,6 +114,7 @@ class _SurveyState extends State<Survey> {
     return Scaffold(
       appBar: AppBar(
         backgroundColor: Colors.black,
+        leading: Padding(padding: const EdgeInsets.all(6), child: ClipRRect(borderRadius: BorderRadius.circular(8), child: Image.asset('assets/icon.png'))),
         title: const Text('TURQUAN SITE SURVEY',
             style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold, letterSpacing: 2)),
         actions: [
